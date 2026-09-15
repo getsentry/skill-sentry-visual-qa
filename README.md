@@ -27,7 +27,9 @@ did not check.
 
 - A local `getsentry/sentry` checkout (the dev-ui server is started from it)
 - A Sentry account to run QA as — a dedicated one, see [Authentication](#authentication)
-- The [`agent-browser`](https://agent-browser.dev/) CLI on `PATH` — `brew install agent-browser` (developed against 0.37.1)
+- The [`agent-browser`](https://agent-browser.dev/) CLI on `PATH` — `brew install agent-browser`
+  (developed against 0.37.1); on a remote workspace install from npm instead, see
+  [Signing in from a remote workspace](#signing-in-from-a-remote-workspace-coderdev)
 - `python3` — used only to mirror auth cookies onto the dev origin
 - `curl`, `bash`
 - `ffmpeg`, for video capture only
@@ -97,6 +99,81 @@ printed, logged, or written to disk by these scripts.
 
 Re-run `sqa sync` whenever the sentry.io session refreshes; the mirrored copies do not update
 themselves. `references/session-and-login.md` covers account switching and auth troubleshooting.
+
+### Signing in from a remote workspace (coder.dev)
+
+`sqa login` opens a **headed** browser, and a remote workspace has no display to open it on.
+On a coder.dev workspace it fails with `Missing X server or $DISPLAY`; agent-browser's
+automatic Xvfb fallback only helps if `Xvfb` is installed, and a framebuffer nobody can see
+does not get you through SSO anyway. Drive the sign-in through the agent-browser dashboard
+instead — it streams the headless browser and forwards clicks and keystrokes.
+
+> **Homebrew's `agent-browser` has no dashboard.** The homebrew-core formula builds without the
+> dashboard frontend, so `dashboard start` serves a `Dashboard not built` stub
+> ([vercel-labs/agent-browser#1412](https://github.com/vercel-labs/agent-browser/issues/1412)).
+> Install from npm for this flow.
+
+**1. Let Chrome start.** Ubuntu 24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`,
+which blocks Chrome's namespace sandbox. Every `agent-browser` command then dies before a
+browser exists, the daemon never creates its socket, and the CLI reports
+`Failed to connect: No such file or directory (os error 2)` — or, from `agent-browser doctor`,
+`No usable sandbox!`. Export the launch flag for the whole session:
+
+```bash
+export AGENT_BROWSER_ARGS="--no-sandbox"
+```
+
+**2. Open the sign-in page headless**, bypassing the `--headed` that `sqa login` forces:
+
+```bash
+agent-browser --session sentry-qa --restore sentry-qa open https://sentry.io/auth/login/
+```
+
+**3. Start the dashboard for your proxied origin.** Coder serves each port at the origin in
+`$VSCODE_PROXY_URI`. The dashboard refuses any non-loopback origin it was not told about, and
+it wants an access token on top of that — an allowed origin *alone* still returns
+`Origin, Referer, or dashboard access token is invalid.`
+
+```bash
+agent-browser dashboard start \
+  --allowed-origins "https://4848--main--<workspace>--<user>.coder.sentry.dev"
+```
+
+Open the URL it prints **including the `#dashboard-access-token=...` fragment**. That fragment
+is the only thing that sets the auth cookie, and the page strips it from the address bar once
+read, so a bookmarked copy will not authenticate a fresh browser. The token is regenerated
+every time the dashboard restarts.
+
+Port-forwarding sidesteps the token entirely, because loopback is trusted by default:
+
+```bash
+coder port-forward <workspace> --tcp 4848:4848   # from your laptop, then http://localhost:4848
+```
+
+**4. Sign in through the Viewport tab**, then mirror the cookies as usual:
+
+```bash
+scripts/sqa sync
+scripts/sqa ready    # expect READY
+```
+
+#### Typing in the dashboard viewport
+
+Clicking and navigation work. Text entry has two gaps, so fill fields from the CLI instead:
+
+- **`.` arrives as Delete.** The viewport sends `key.charCodeAt(0)` as the virtual key code,
+  and `".".charCodeAt(0)` is 46 — `VK_DELETE`. A period is not merely dropped: it deletes
+  whatever is to the right of the cursor, so typing one mid-string silently eats a character.
+- **There is no clipboard bridge.** The viewport forwards keyboard and mouse events only, so
+  Ctrl+V pastes the *remote* browser's clipboard rather than yours.
+
+```bash
+agent-browser --session sentry-qa snapshot -i             # get the @refs
+agent-browser --session sentry-qa fill "@e11" "qa-bot@example.com"
+agent-browser --session sentry-qa fill "@e12" "$(cat)"    # type, then Ctrl-D: keeps it out of shell history
+```
+
+`fill` and `keyboard inserttext` bypass key dispatch, so both handle periods correctly.
 
 ## Configuration
 
