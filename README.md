@@ -1,6 +1,6 @@
 # sentry-visual-qa
 
-An [agent skill](https://code.claude.com/docs/en/skills) that makes a coding agent verify
+An agent skill — a `SKILL.md` with its scripts and references — that makes a coding agent verify
 user-visible [Sentry](https://github.com/getsentry/sentry) UI changes in a real browser, and
 report only what the captured screenshots, videos, and DOM checks actually support.
 
@@ -26,6 +26,7 @@ did not check.
 ## Requirements
 
 - A local `getsentry/sentry` checkout (the dev-ui server is started from it)
+- A Sentry account to run QA as — a dedicated one, see [Authentication](#authentication)
 - The [`agent-browser`](https://agent-browser.dev/) CLI on `PATH` — `brew install agent-browser` (developed against 0.37.1)
 - `python3` — used only to mirror auth cookies onto the dev origin
 - `curl`, `bash`
@@ -37,12 +38,65 @@ The repository root *is* the skill, so clone it straight into your agent's skill
 and `git pull` updates the skill in place:
 
 ```bash
-# Claude Code (personal skills)
-git clone https://github.com/<you>/sentry-visual-qa.git ~/.claude/skills/sentry-visual-qa
+git clone https://github.com/<you>/sentry-visual-qa.git ~/.agents/skills/sentry-visual-qa
 ```
 
-If you keep your checkouts elsewhere, clone there and symlink the clone in under the same
-name instead.
+If your agent reads skills from somewhere else, or you keep your checkouts elsewhere, clone
+once and link it in under the same directory name:
+
+```bash
+ln -s ~/.agents/skills/sentry-visual-qa <your-agent-skills-dir>/sentry-visual-qa
+```
+
+## Authentication
+
+QA runs as a real Sentry account in a dedicated browser session, never your everyday browser
+profile. Session cookies live in `~/.agent-browser/sessions/`, and `scripts/sqa` passes the
+session flags on every call — invoking `agent-browser` directly drops them and silently
+captures a logged-out page.
+
+### Use a dedicated account, not your own
+
+**Whatever the account can see, the agent can capture.** The dev-ui server proxies every API
+call to production sentry.io, so a run renders live production data — issues, events, member
+names — for every organization that account belongs to.
+
+Do not sign in with an account that has production or customer access. Create a **separate
+Sentry user** whose only membership is an organization with nothing sensitive in it, and use
+it for QA and nothing else. `sentry-sdks` is the default target here for exactly that reason:
+it holds SDK projects rather than customer data.
+
+`scripts/sqa` does refuse URLs pointing at Sentry's own `sentry` org (exit 4, configurable via
+`SENTRY_QA_FORBIDDEN_ORGS`) — but treat that as a backstop, not the boundary. A blocklist only
+stops the targets someone thought to name, while an account with no access to sensitive data
+cannot render it whatever URL it is handed.
+
+Confirm which account is live before trusting any capture:
+
+```bash
+scripts/sqa whoami
+# {"authed":true,"user":"qa-bot@example.com","org":"my-org","devUi":true,...}
+```
+
+### Why signing in takes two steps
+
+The dev-ui server proxies `/api` to sentry.io **server-side**, so the browser needs Sentry
+session cookies on the **dev origin** — and cookies set on `.sentry.io` are never sent to
+`*.dev.getsentry.net`. SSO cannot complete through the dev origin either, so signing in at the
+dev-ui `/auth/login/` does not work. Sign in upstream, then mirror the cookies across:
+
+```bash
+scripts/sqa login   # headed sentry.io sign-in; a human completes SSO
+scripts/sqa sync    # mirror the session cookies onto .dev.getsentry.net
+scripts/sqa ready   # expect READY
+```
+
+`sync` copies `session`, `sentry-sc`, and `sentry_react_auth`. `sentry-sudo` is skipped unless
+you pass `--with-sudo` — rendering does not need elevated access. Cookie values are never
+printed, logged, or written to disk by these scripts.
+
+Re-run `sqa sync` whenever the sentry.io session refreshes; the mirrored copies do not update
+themselves. `references/session-and-login.md` covers account switching and auth troubleshooting.
 
 ## Configuration
 
@@ -67,9 +121,8 @@ Server state (pid, port, remembered checkout) lives in
 
 ## Safety
 
-The dev-ui server builds local `static/` but proxies **every API call to production
-sentry.io**, so every pixel captured is production data. Two rules follow from that, and the
-skill enforces both:
+Every capture renders production data, for the reason described under
+[Authentication](#authentication). Two rules follow from that, and the skill enforces both:
 
 - Sentry's own `sentry` org is never a target. `scripts/sqa` refuses those URLs outright
   (exit 4), and the skill instructs the agent never to route around that refusal.
