@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Copy Sentry auth cookies from sentry.io onto the dev-ui domain.
+#
+# The dev-ui server proxies /api to sentry.io server-side, so the browser must
+# hold session cookies on the *dev* origin. SSO cannot complete through the
+# :7999 origin, so the flow is: sign in on sentry.io in the QA session, then run
+# this to mirror those cookies onto .dev.getsentry.net.
+#
+#   sync-cookies [--with-sudo]
+#
+# Copies session, sentry-sc and sentry_react_auth. sentry-sudo is skipped unless
+# --with-sudo is passed: sudo mode grants elevated access that rendering does not
+# need. Cookie values are never printed, logged, or written to disk.
+set -uo pipefail
+
+SESSION="${SENTRY_QA_SESSION:-sentry-qa}"
+DEST_DOMAIN="${SENTRY_QA_COOKIE_DOMAIN:-.dev.getsentry.net}"
+NAMES="session sentry-sc sentry_react_auth"
+[ "${1:-}" = "--with-sudo" ] && NAMES="$NAMES sentry-sudo"
+
+export SENTRY_QA_NAMES="$NAMES"
+export SENTRY_QA_DEST="$DEST_DOMAIN"
+export SENTRY_QA_SESSION_NAME="$SESSION"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+agent-browser --session "$SESSION" --restore "$SESSION" cookies get --json 2>/dev/null \
+  | python3 "$SCRIPT_DIR/_sync_cookies.py"

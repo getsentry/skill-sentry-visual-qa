@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# Manage the QA dev-ui server: its own port, separate from the everyday one.
+#
+#   dev-ui [start]   start (or reuse) the QA dev-ui server, wait until it serves
+#   dev-ui stop      stop the server this script started
+#   dev-ui status    report whether the QA port is serving
+#
+# Port comes from SENTRY_QA_PORT (default 7900). dev-ui-server.ts ignores argv and
+# reads SENTRY_WEBPACK_PROXY_PORT, then scans up to +10 if that port is taken, so the
+# default is kept far below 7999 and the bound port is verified after start.
+#
+# Type checking is NOT run here: rspack gates it on ENABLE_TS_CHECKER, which is off
+# unless explicitly set (rspack.config.ts). Typechecking belongs in `pnpm run typecheck`.
+set -uo pipefail
+
+PORT="${SENTRY_QA_PORT:-7900}"
+REPO=""  # resolved by resolve_repo below
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/sentry-visual-qa"
+PID_FILE="$STATE_DIR/dev-ui-$PORT.pid"
+LOG_FILE="$STATE_DIR/dev-ui-$PORT.log"
+WAIT_SECONDS="${SENTRY_QA_START_TIMEOUT:-300}"
+
+# rspack-dev-middleware holds requests to / until the first bundle finishes, so a
+# short timeout looks identical to "not running". Distinguish by curl exit code:
+#   0  = serving        7  = nothing listening        28 = listening, still building
+probe() {
+  curl -skS --connect-timeout 3 -m "${SENTRY_QA_PROBE_TIMEOUT:-60}" -o /dev/null \
+    "https://sentry.dev.getsentry.net:$PORT/" >/dev/null 2>&1
+  echo $?
+}
+
+serving() { [ "$(probe)" = "0" ]; }
+
+is_checkout() { [ -f "$1/package.json" ] && grep -q '"dev-ui"' "$1/package.json" 2>/dev/null; }
+
+# The skill is usually invoked from its own directory, so $PWD alone is not enough:
+# take an explicit override, else walk up from $PWD, else the repo remembered from a
+# previous successful start.
+resolve_repo() {
+  if [ -n "${SENTRY_QA_REPO:-}" ]; then
+    echo "$SENTRY_QA_REPO"
+    return
+  fi
+  d="$PWD"
+  while [ "$d" != "/" ]; do
+    if is_checkout "$d"; then
+      echo "$d"
+      return
+    fi
+    d="$(dirname "$d")"
+  done
+  [ -f "$STATE_DIR/repo" ] && cat "$STATE_DIR/repo"
+}
+
+case "${1:-start}" in
+  status)
+    if serving; then
+      echo "SERVING port $PORT"
+      exit 0
+    fi
+    echo "NOT SERVING port $PORT"
+    exit 1
+    ;;
+
+  stop)
+    # pnpm spawns node, which spawns rspack, and the group is not a session leader
+    # (no setsid on macOS), so killing the recorded pid alone orphans the server.
+    # Collect the recorded pid, its descendants, and whatever holds the port.
+    pids=""
+    if [ -f "$PID_FILE" ]; then
+      root="$(cat "$PID_FILE")"
+      pids="$root"
+      queue="$root"
+      while [ -n "$queue" ]; do
+        next=""
+        for pid in $queue; do
+          kids="$(pgrep -P "$pid" 2>/dev/null)"
+          [ -n "$kids" ] && next="$next $kids" && pids="$pids $kids"
+        done
+        queue="$next"
+      done
+    fi
+    # Only this port's listener, never the everyday server on another port.
+    listeners="$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null)"
+    pids="$pids $listeners"
+    # Keep only pids that are actually alive: a crashed or OOM-killed server leaves
+    # a stale pidfile behind, and killing a dead pid would look like a success.
+    live=""
+    for pid in $(echo $pids | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u); do
+      kill -0 "$pid" 2>/dev/null && live="$live $pid"
+    done
+    pids="$live"
+
+    if [ -z "${pids// /}" ]; then
+      echo "nothing running on port $PORT" >&2
+      [ -f "$PID_FILE" ] && echo "(cleared a stale pidfile)" >&2
+      rm -f "$PID_FILE"
+      exit 1
+    fi
+    kill $pids 2>/dev/null
+    sleep 3
+    still="$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null)"
+    if [ -n "$still" ]; then
+      kill -9 $still 2>/dev/null
+      sleep 1
+    fi
+    rm -f "$PID_FILE"
+    if lsof -ti "tcp:$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "port $PORT is still held; stop it where it was started" >&2
+      exit 1
+    fi
+    echo "stopped dev-ui on port $PORT"
+    ;;
+
+  start)
+    if serving; then
+      echo "REUSING already-serving dev-ui on port $PORT"
+      exit 0
+    fi
+    REPO="$(resolve_repo)"
+    if [ -z "$REPO" ] || ! is_checkout "$REPO"; then
+      echo "no sentry checkout found from $PWD" >&2
+      echo "run from the checkout, or set SENTRY_QA_REPO=/path/to/sentry" >&2
+      exit 3
+    fi
+
+    mkdir -p "$STATE_DIR"
+    echo "$REPO" > "$STATE_DIR/repo"
+    : > "$LOG_FILE"
+    echo "starting dev-ui on port $PORT (log: $LOG_FILE)" >&2
+    # setsid gives the server its own process group so `stop` can kill rspack too.
+    ( cd "$REPO" && SENTRY_WEBPACK_PROXY_PORT="$PORT" \
+        nohup pnpm run dev-ui >>"$LOG_FILE" 2>&1 & echo $! > "$PID_FILE" )
+    # `stop` walks descendants from this pid and also frees the port directly.
+
+    # Track elapsed by wall clock: each probe can itself block for a long time.
+    start_ts=$SECONDS
+    while [ $((SECONDS - start_ts)) -lt "$WAIT_SECONDS" ]; do
+      code="$(probe)"
+      if [ "$code" = "0" ]; then
+        # dev-ui-server.ts silently shifts port when one is taken; confirm the bind.
+        if grep -q "Starting on port" "$LOG_FILE" 2>/dev/null; then
+          actual="$(grep -o "Starting on port [0-9]*" "$LOG_FILE" | tail -1 | grep -o '[0-9]*')"
+          if [ -n "$actual" ] && [ "$actual" != "$PORT" ]; then
+            echo "PORT_SHIFTED requested $PORT but bound $actual" >&2
+            echo "set SENTRY_QA_PORT=$actual, or free the port and restart" >&2
+            exit 4
+          fi
+        fi
+        echo "SERVING port $PORT"
+        exit 0
+      fi
+      if ! kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        echo "dev-ui exited during startup; last lines:" >&2
+        tail -15 "$LOG_FILE" >&2
+        exit 5
+      fi
+      [ "$code" = "28" ] && echo "  still bundling ($((SECONDS - start_ts))s)" >&2
+      sleep 2
+    done
+    echo "dev-ui did not serve within ${WAIT_SECONDS}s; last lines:" >&2
+    tail -15 "$LOG_FILE" >&2
+    exit 5
+    ;;
+
+  ""|-h|--help)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+
+  *)
+    echo "unknown command: $1" >&2
+    exit 64
+    ;;
+esac

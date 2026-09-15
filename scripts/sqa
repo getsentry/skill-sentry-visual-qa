@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Run agent-browser pinned to the dedicated Sentry QA browser session.
+#
+#   sqa <agent-browser args...>   passthrough with the QA session + saved login
+#   sqa whoami                    print which Sentry account the session is on
+#   sqa ready [url]               open url and classify: READY | LOGIN_REQUIRED | UNREACHABLE
+#   sqa login                     open a headed sentry.io sign-in (SSO needs a human)
+#   sqa serve                     start (or reuse) the QA dev-ui server on its own port
+#   sqa sync                      mirror sentry.io cookies onto the dev-ui domain
+#
+# Env: SENTRY_QA_SESSION (default sentry-qa), SENTRY_QA_ORG (default sentry-sdks),
+#      SENTRY_QA_URL (default https://$SENTRY_QA_ORG.dev.getsentry.net:7999),
+#      SENTRY_QA_PORT (default 7900, separate from the everyday 7999),
+#      SENTRY_QA_HEADED=1 to watch the browser while debugging (default headless).
+set -uo pipefail
+
+SESSION="${SENTRY_QA_SESSION:-sentry-qa}"
+QA_ORG="${SENTRY_QA_ORG:-sentry-sdks}"
+# Orgs that are never a QA target. `sentry` is Sentry's own production org.
+FORBIDDEN_ORGS="${SENTRY_QA_FORBIDDEN_ORGS:-sentry}"
+QA_PORT="${SENTRY_QA_PORT:-7900}"
+BASE_URL="${SENTRY_QA_URL:-https://$QA_ORG.dev.getsentry.net:$QA_PORT}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Headless unless SENTRY_QA_HEADED is set. Passed explicitly so a config file or
+# stray env cannot silently open windows. Headed/headless is fixed when the browser
+# launches, so a running headed browser must be closed before this takes effect.
+HEADED="false"
+[ -n "${SENTRY_QA_HEADED:-}" ] && HEADED="true"
+
+ab() { agent-browser --session "$SESSION" --restore "$SESSION" --headed "$HEADED" "$@"; }
+
+# Refuse any URL pointing at a forbidden org, on the dev-ui host or on sentry.io.
+# This is a hard stop, not a default: those orgs hold production customer data.
+deny_check() {
+  local arg host label bad
+  for arg in "$@"; do
+    case "$arg" in
+      http://*|https://*) ;;
+      *) continue ;;
+    esac
+    host="${arg#*://}"; host="${host%%/*}"; host="${host%%:*}"
+    label="${host%%.*}"
+    case "$host" in
+      *.dev.getsentry.net|*.sentry.io)
+        for bad in $FORBIDDEN_ORGS; do
+          if [ "$label" = "$bad" ]; then
+            echo "REFUSED $arg" >&2
+            echo "the $bad org is production Sentry data and is never a QA target" >&2
+            echo "use an org subdomain such as https://$QA_ORG.dev.getsentry.net:7999" >&2
+            return 1
+          fi
+        done
+        ;;
+    esac
+  done
+  return 0
+}
+
+IDENTITY_JS='(() => {
+  const d = window.__initialData;
+  if (!d) return JSON.stringify({sentryApp: false, url: location.href});
+  return JSON.stringify({
+    sentryApp: true,
+    authed: !!d.isAuthenticated,
+    user: (d.user && d.user.email) || null,
+    superuser: !!(d.user && d.user.isSuperuser),
+    org: d.lastOrganization || null,
+    theme: (d.user && d.user.options && d.user.options.theme) || null,
+    devUi: !!window.__SENTRY_DEV_UI,
+    url: location.href,
+  });
+})()'
+
+case "${1:-}" in
+  whoami)
+    ab eval "$IDENTITY_JS"
+    ;;
+
+  ready)
+    url="${2:-$BASE_URL}"
+    deny_check "$url" || exit 4
+    ab open "$url" >/dev/null 2>&1
+    # `open` exits 0 even on ERR_CONNECTION_REFUSED, leaving the browser on the
+    # previous page or chrome-error://. Assert we actually landed on the target,
+    # or the gate would validate whatever was loaded before.
+    expected_host="${url#*://}"; expected_host="${expected_host%%/*}"
+    landed_host="$(ab eval "location.host" 2>/dev/null | tr -d '"\\')"
+    if [ "$landed_host" != "$expected_host" ]; then
+      echo "UNREACHABLE $url"
+      echo "navigation did not land on $expected_host (browser is at: ${landed_host:-chrome-error})" >&2
+      echo "hint: start the QA server with: sqa serve" >&2
+      exit 3
+    fi
+    # The loading shell is served before React mounts, so poll for hydration
+    # instead of treating a slow boot as a broken build.
+    identity=""
+    tries=0
+    while [ "$tries" -lt 20 ]; do
+      identity="$(ab eval "$IDENTITY_JS" 2>/dev/null | tr -d '\\' | sed 's/^"//;s/"$//')"
+      case "$identity" in
+        *'"sentryApp":true'*) break ;;
+      esac
+      tries=$((tries + 1))
+      ab wait 1000 >/dev/null 2>&1
+    done
+    # Hydration is not rendering: bootWithHydration sets __initialData before React
+    # mounts and before route chunks compile, so the loading shell can still be on
+    # screen while identity already reports authenticated. Wait for the shell to go.
+    shell_ts=$SECONDS
+    shell_timeout="${SENTRY_QA_RENDER_TIMEOUT:-120}"
+    while [ $((SECONDS - shell_ts)) -lt "$shell_timeout" ]; do
+      ab get text body 2>/dev/null | grep -qi "ton of JavaScript" || break
+      ab wait 2000 >/dev/null 2>&1
+    done
+    if ab get text body 2>/dev/null | grep -qi "ton of JavaScript"; then
+      echo "BUILD_BROKEN $url"
+      echo "still the loading shell after ${shell_timeout}s; check the compiler, not the component" >&2
+      echo "see references/sentry-capture.md" >&2
+      exit 5
+    fi
+    case "$identity" in
+      *'"authed":true'*)
+        echo "READY $identity"
+        exit 0
+        ;;
+    esac
+    # Unauthenticated Sentry bounces to a login or marketing page, and neither
+    # boots the React app, so match the URL before deciding the host is broken.
+    case "$identity" in
+      *auth/login*|*auth/sso*|*/welcome*|*/login*|*'"authed":false'*)
+        echo "LOGIN_REQUIRED $identity"
+        echo "if already signed in on sentry.io: sqa sync   otherwise: sqa login" >&2
+        echo "see references/session-and-login.md" >&2
+        exit 2
+        ;;
+      *'"sentryApp":false'*)
+        echo "UNREACHABLE $url"
+        echo "page loaded but is not the Sentry app: $identity" >&2
+        exit 3
+        ;;
+      *)
+        echo "LOGIN_REQUIRED $identity"
+        echo "see references/session-and-login.md" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+
+  login)
+    # SSO cannot complete through the dev-ui origin, so sign in on sentry.io
+    # and mirror the cookies afterwards with `sqa sync`.
+    echo "Opening a headed browser at https://sentry.io/auth/login/." >&2
+    echo "Sign in there, then run: sqa sync   (that mirrors cookies and returns to headless)" >&2
+    # A running headless browser cannot be flipped to headed, so restart it.
+    agent-browser --session "$SESSION" close >/dev/null 2>&1
+    agent-browser --session "$SESSION" --restore "$SESSION" --headed open "https://sentry.io/auth/login/"
+    exit 2
+    ;;
+
+  serve)
+    shift
+    "$SCRIPT_DIR/dev-ui" "$@"
+    ;;
+
+  sync)
+    shift
+    if "$SCRIPT_DIR/sync-cookies" "$@"; then
+      # The login window exists only to obtain cookies; once mirrored, close it so
+      # the next command relaunches headless. Restore keeps the cookies.
+      agent-browser --session "$SESSION" close >/dev/null 2>&1
+      echo "closed the login browser; the next sqa command starts headless"
+    else
+      exit $?
+    fi
+    ;;
+
+  ""|-h|--help)
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+
+  *)
+    deny_check "$@" || exit 4
+    ab "$@"
+    ;;
+esac
