@@ -38,7 +38,7 @@ The repository root *is* the skill, so clone it straight into your agent's skill
 and `git pull` updates the skill in place:
 
 ```bash
-git clone https://github.com/<you>/sentry-visual-qa.git ~/.agents/skills/sentry-visual-qa
+git clone https://github.com/getsentry/sentry-visual-qa.git ~/.agents/skills/sentry-visual-qa
 ```
 
 If your agent reads skills from somewhere else, or you keep your checkouts elsewhere, clone
