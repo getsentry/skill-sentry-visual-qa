@@ -216,8 +216,14 @@ scripts/sqa record stop
 
 - Put artifacts in front of the user with the harness file-sending tool, and say where each file is saved.
 - Claim an artifact was delivered only after the send succeeds in this turn; otherwise report the error plus the saved path.
-- For a PR, upload each artifact to `uploads.github.com/user-attachments/assets` and hand the resulting markdown to the user to paste. Uploading returns a URL and publishes nothing; placing it is the user's call.
-- Embed an uploaded image as a **linked** image — `[![alt](url)](url)`, the asset URL in both halves — never a bare `![alt](url)`. GitHub synthesizes the anchor for a bare image and points it at a signed URL that expires in five minutes, so the thumbnail renders but the click-through 404s soon after. Videos stay a bare URL on their own line. See the `attach-github-assets` skill.
+- When opening a PR right now, attach the artifacts to that `gh pr create` call. Write the body against the local paths, and `gh` swaps each one for its uploaded asset URL:
+
+```bash
+gh pr create --draft --attach './before.png#Issues stream, before' --attach ./after.png
+```
+
+- Reference every image in the body yourself, as a **linked** image — `[![alt](./before.png)](./before.png)`, the same local path in both halves. `gh` rewrites both halves to the asset URL and the anchor survives. An image the body never references is appended as a bare `![alt](url)`, and GitHub then points its synthesized anchor at a signed URL that expires in five minutes — the thumbnail renders, the click-through 404s. Video is the exception: leave it unreferenced and let `gh` append the bare URL, which is what makes it play.
+- Anywhere else, do not upload at all. Attaching is posting, so if the evidence is not cleared to be posted it stays local: the file-send already put it in the user's hands, and GitHub's composer uploads whatever they drag into it. Pre-uploading to hand back a URL buys them nothing and spends an irreversible upload. `gh pr comment --attach` and `gh pr edit --attach` need an explicit ask in that message.
 - Do not post to a PR or issue — body edits, comments, and review replies included — without an explicit ask in that message. Embedding evidence in the body of a PR being opened right now is in scope; adding it to an existing PR later is not.
 
 ## Protect Sensitive Data

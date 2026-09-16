@@ -19,7 +19,7 @@ Preserved from upstream:
 
 ## Local Adaptations
 
-- Replaced junior's `sendFiles` tool with the local harness file-send plus GitHub user-attachment upload for PR evidence, under the user's standing rule against posting to GitHub conversations without an explicit ask
+- Replaced junior's `sendFiles` tool with the local harness file-send, plus `gh pr create --attach` for evidence on a PR being opened now, under the user's standing rule against posting to GitHub conversations without an explicit ask. Evidence that is not cleared to post is not uploaded either — the user drags the sent file into GitHub's composer
 - Added `scripts/sqa`, because `agent-browser` requires `--session` and `--restore` on every invocation and dropping them silently captures a logged-out page
 - Added the `ready` gate (`READY` / `LOGIN_REQUIRED` / `UNREACHABLE`) so a login or error page cannot be captured and reported as QA evidence
 - Added identity reporting via `window.__initialData` (`isAuthenticated`, `user.email`, `lastOrganization`), verified against `static/app/types/system.tsx`
