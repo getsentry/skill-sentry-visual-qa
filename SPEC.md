@@ -17,7 +17,7 @@ Out of scope:
 - General browser automation with no visual-correctness question
 - Backend-only, CLI, or test-only changes (dev-ui serves production APIs, so `src/` changes are unverifiable here)
 - Jest/RTL and acceptance-test authoring
-- Posting evidence to GitHub without an explicit ask
+- Posting evidence to a PR or issue someone else authored without an explicit ask (evidence in the body of the user's own PR is in scope)
 
 ## Users And Trigger Context
 
@@ -61,7 +61,7 @@ Data that must not be stored: passwords, session cookies, API tokens, customer o
 - SSO logins need a one-time headed sign-in by a human on sentry.io, followed by `sqa sync`; the mirror must be re-run when that session refreshes
 - Theme forcing works only when the QA account's theme option is `system`
 - Flag-gated views depend on production flag state for the QA account; they cannot be toggled locally
-- Every capture renders production data, so nothing is publishable without confirming the frame is clean
+- In-app captures render production data, so those frames are not publishable until the user confirms they are clean; fixture-only story frames can go straight into the user's own PR body
 - Org access is limited to what the QA account can see; forbidden orgs are refused by `scripts/sqa`
 - Video capture needs `ffmpeg`
 - A broken frontend build shows as a stuck loading screen, not a rendering defect

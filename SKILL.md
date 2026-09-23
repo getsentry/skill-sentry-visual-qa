@@ -223,17 +223,23 @@ gh pr create --draft --attach './before.png#Issues stream, before' --attach ./af
 ```
 
 - Reference every image in the body yourself, as a **linked** image — `[![alt](./before.png)](./before.png)`, the same local path in both halves. `gh` rewrites both halves to the asset URL and the anchor survives. An image the body never references is appended as a bare `![alt](url)`, and GitHub then points its synthesized anchor at a signed URL that expires in five minutes — the thumbnail renders, the click-through 404s. Video is the exception: leave it unreferenced and let `gh` append the bare URL, which is what makes it play.
-- Anywhere else, do not upload at all. Attaching is posting, so if the evidence is not cleared to be posted it stays local: the file-send already put it in the user's hands, and GitHub's composer uploads whatever they drag into it. Pre-uploading to hand back a URL buys them nothing and spends an irreversible upload. `gh pr comment --attach` and `gh pr edit --attach` need an explicit ask in that message.
-- Do not post to a PR or issue — body edits, comments, and review replies included — without an explicit ask in that message. Embedding evidence in the body of a PR being opened right now is in scope; adding it to an existing PR later is not.
+- On an existing PR the user authored — they opened it, or an agent opened it for them; check with `gh pr view <n> --json author,body` — add the evidence to its body without asking. Add or replace a `## Screenshots` section in the current body that references each image by local path, as above, and write it back in one call, so `gh` rewrites the references and everything else in the body survives:
+
+```bash
+gh pr edit <n> --body-file body.md --attach './before.png#Issues stream, before' --attach ./after.png
+```
+
+- Evidence goes in the body, never in a comment. `gh pr comment --attach` needs an explicit ask in that message.
+- On a PR or issue someone else authored, do not upload or post anything — body edits, comments, and review replies included — without an explicit ask in that message. Attaching is posting: the file-send already put the evidence in the user's hands, and GitHub's composer uploads whatever they drag into it.
 
 ## Protect Sensitive Data
 
-Every capture here renders production data, so this is not an edge case — it is every run.
+Every in-app capture here renders production data, so this is not an edge case — it is nearly every run. Stories fed by fixtures are the exception.
 
 - The `sentry` org is never a target. `scripts/sqa` refuses it; do not reach for it another way.
 - Capture only the org the user works in. Never another organization's slug, event contents, member emails, or support context.
 - Never capture credential entry, session tokens, or auth cookies, and never print cookie values.
-- Nothing captured here may go into a PR, commit, or issue without the user confirming the frame is clean.
+- A frame that renders production data (an issue stream, event, org settings, anything fetched from sentry.io) may not go into a PR, commit, or issue until the user confirms it is clean. A frame showing only fixture data — a scraps story or a story fed by a fixture API — needs no such confirmation, and can go into the user's own PR body directly. If you are not sure which kind a frame is, treat it as production data.
 - If answering the request requires rendering data that cannot be shown, report the limitation instead of capturing it.
 
 ## Report The Result
