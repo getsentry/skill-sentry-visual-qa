@@ -128,9 +128,14 @@ case "${1:-start}" in
     echo "$REPO" > "$STATE_DIR/repo"
     : > "$LOG_FILE"
     echo "starting dev-ui on port $PORT (log: $LOG_FILE)" >&2
-    # setsid gives the server its own process group so `stop` can kill rspack too.
-    ( cd "$REPO" && SENTRY_WEBPACK_PROXY_PORT="$PORT" \
-        nohup pnpm run dev-ui >>"$LOG_FILE" 2>&1 & echo $! > "$PID_FILE" )
+    # Redirect the whole background job, not just pnpm: `a && b &` forks a wrapper
+    # subshell that waits on the server, and if that wrapper keeps our stdout/stderr
+    # the caller's pipe never closes, so `sqa serve` hangs after printing SERVING.
+    # `exec` replaces the wrapper with pnpm, so the pidfile records the server itself.
+    ( cd "$REPO" || exit 1
+      SENTRY_WEBPACK_PROXY_PORT="$PORT" exec nohup pnpm run dev-ui
+    ) >>"$LOG_FILE" 2>&1 </dev/null &
+    echo $! > "$PID_FILE"
     # `stop` walks descendants from this pid and also frees the port directly.
 
     # Track elapsed by wall clock: each probe can itself block for a long time.
