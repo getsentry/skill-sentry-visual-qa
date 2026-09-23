@@ -126,8 +126,11 @@ Every capture renders production data, for the reason described under
 
 - Sentry's own `sentry` org is never a target. `scripts/sqa` refuses those URLs outright
   (exit 4), and the skill instructs the agent never to route around that refusal.
-- Nothing captured goes into a PR, commit, or issue without a human confirming the frame is
-  clean. The skill also never posts to a GitHub conversation on its own.
+- A frame showing production data goes into a PR, commit, or issue only after a human confirms
+  it is clean. Fixture-only frames (stories) are exempt.
+
+The skill adds before/after evidence to the body of a PR the user authored without asking. It
+never comments, and never posts to a PR or issue someone else authored unless asked.
 
 Backend (`src/`) changes are *not* live on this server — the skill reports such a request as
 blocked rather than implying it was verified.
