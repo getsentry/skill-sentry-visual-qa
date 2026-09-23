@@ -90,7 +90,7 @@ scripts/sqa serve stop # stop the one this skill started
 
 Override the port with `SENTRY_QA_PORT`. Keep it well below 7999: the server silently scans up to +10 when a port is taken, so a nearby value can land on the everyday server.
 
-A cold start builds the whole bundle and takes several minutes; `serve` blocks until the server actually answers, and reuses one that is already serving.
+`scripts/dev-ui` also sets `WEBPACK_CACHE_PATH=node_modules/.cache/rspack-qa`, so a restart in the same checkout reuses rspack's persistent cache (~15s and ~30s of CPU instead of ~55s and ~250s). A cold start in a fresh checkout still builds the whole bundle; `serve` blocks until the server actually answers, and reuses one that is already serving. Do not set `LAZY_COMPILATION`: on the dev-ui server pages never leave the loading shell and rspack can panic.
 
 A QA server is a second full rspack build running alongside the user's own, which is memory-hungry — enough that one can be OOM-killed mid-build. Reuse an already-serving one, run `scripts/sqa serve stop` when the QA run is finished, and if a start dies partway, check memory before assuming the code is at fault. The checkout is found from the working directory, an explicit `SENTRY_QA_REPO`, or the repo remembered from a previous start — so `serve` works from the skill directory too.
 

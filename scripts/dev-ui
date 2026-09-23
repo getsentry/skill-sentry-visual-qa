@@ -11,6 +11,15 @@
 #
 # Type checking is NOT run here: rspack gates it on ENABLE_TS_CHECKER, which is off
 # unless explicitly set (rspack.config.ts). Typechecking belongs in `pnpm run typecheck`.
+#
+# WEBPACK_CACHE_PATH turns on rspack's persistent filesystem cache (rspack.config.ts),
+# relative to the checkout, so a restart in the same checkout is warm: ~30s of rspack
+# CPU instead of ~250s. QA-specific dir so it never shares a cache with the everyday
+# server; ~1GB per checkout. Override, or disable with an empty value, from the env.
+#
+# Do NOT set LAZY_COMPILATION: on the dev-ui server, pages never get past the loading
+# shell (sqa ready -> BUILD_BROKEN), the runtime keeps rebuilding, and rspack 2.2.3
+# can panic with "capacity overflow".
 set -uo pipefail
 
 PORT="${SENTRY_QA_PORT:-7900}"
@@ -133,7 +142,9 @@ case "${1:-start}" in
     # the caller's pipe never closes, so `sqa serve` hangs after printing SERVING.
     # `exec` replaces the wrapper with pnpm, so the pidfile records the server itself.
     ( cd "$REPO" || exit 1
-      SENTRY_WEBPACK_PROXY_PORT="$PORT" exec nohup pnpm run dev-ui
+      SENTRY_WEBPACK_PROXY_PORT="$PORT" \
+        WEBPACK_CACHE_PATH="${WEBPACK_CACHE_PATH-node_modules/.cache/rspack-qa}" \
+        exec nohup pnpm run dev-ui
     ) >>"$LOG_FILE" 2>&1 </dev/null &
     echo $! > "$PID_FILE"
     # `stop` walks descendants from this pid and also frees the port directly.
