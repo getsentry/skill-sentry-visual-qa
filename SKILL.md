@@ -35,11 +35,13 @@ Runs are headless. Only the one-time sign-in opens a window, and `scripts/sqa sy
 |------------------|------|---------|
 | `READY` | 0 | proceed to capture |
 | `LOGIN_REQUIRED` | 2 | `scripts/sqa sync`; if that fails, `scripts/sqa login` |
-| `UNREACHABLE` | 3 | dev-ui is not running; report blocked |
+| `UNREACHABLE` | 3 | dev-ui is not running **or the browser never launched** — check both before reporting blocked |
 | `REFUSED` | 4 | forbidden org; stop and ask which org to use |
 | `BUILD_BROKEN` | 5 | frontend bundle never loaded; diagnose the compiler, report blocked |
 
 Never capture on any state but `READY`. A screenshot of a login page, an error page, or a loading screen is not evidence of anything.
+
+`UNREACHABLE` names a symptom, not a cause: `ready` reports it whenever the browser did not land on the page, which includes the browser failing to start at all. Confirm the server is actually down — `curl -sk -o /dev/null -w '%{http_code}' https://localhost:$SENTRY_QA_PORT/` — before blaming it. If the server answers, the browser is the problem; run the same URL through `agent-browser` directly to see Chrome's own stderr. `sqa` already passes `--no-sandbox` and `--ignore-certificate-errors`, which covers containers and the dev server's self-signed certificate; a launch failure past that is a new one worth reading the error for.
 
 ## Choose Evidence
 

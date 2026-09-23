@@ -11,7 +11,8 @@
 # Env: SENTRY_QA_SESSION (default sentry-qa), SENTRY_QA_ORG (default sentry-sdks),
 #      SENTRY_QA_URL (default https://$SENTRY_QA_ORG.dev.getsentry.net:7999),
 #      SENTRY_QA_PORT (default 7900, separate from the everyday 7999),
-#      SENTRY_QA_HEADED=1 to watch the browser while debugging (default headless).
+#      SENTRY_QA_HEADED=1 to watch the browser while debugging (default headless),
+#      AGENT_BROWSER_ARGS to replace Chrome's launch args (see the default below).
 set -uo pipefail
 
 SESSION="${SENTRY_QA_SESSION:-sentry-qa}"
@@ -27,6 +28,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # launches, so a running headed browser must be closed before this takes effect.
 HEADED="false"
 [ -n "${SENTRY_QA_HEADED:-}" ] && HEADED="true"
+
+# Chrome's launch args, exported so every agent-browser call below inherits them.
+#
+# --no-sandbox: Chrome's sandbox needs unprivileged user namespaces, which
+#   containers and hardened hosts routinely disable. Without this Chrome dies
+#   before it writes DevToolsActivePort ("No usable sandbox!"), and since the
+#   browser never comes up, `ready` blames the server and reports UNREACHABLE --
+#   sending you off to debug a dev-ui that was fine all along.
+# --ignore-certificate-errors: the dev-ui server signs its own certificate, so
+#   the browser rejects it (ERR_CERT_AUTHORITY_INVALID) and never lands on the
+#   page. Scoped to this session's browser, which only ever opens the local QA
+#   server and sentry.io.
+#
+# Set AGENT_BROWSER_ARGS yourself to override; agent-browser takes a comma- or
+# newline-separated list.
+export AGENT_BROWSER_ARGS="${AGENT_BROWSER_ARGS:---no-sandbox,--ignore-certificate-errors}"
 
 ab() { agent-browser --session "$SESSION" --restore "$SESSION" --headed "$HEADED" "$@"; }
 
